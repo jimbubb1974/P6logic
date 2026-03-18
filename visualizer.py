@@ -117,50 +117,75 @@ def _build_hover_js(js_data: dict) -> str:
 
     var currentFilter = Infinity;   // no filter by default
 
-    // ---------------------------------------------------------------- float filter
-    function nodeVisible(c) {{
-        var f = nodeFloats[c];
-        return f === null || f === undefined || f <= currentFilter;
-    }}
+    // ---------------------------------------------------------------- cached filter state
+    // Rebuilt once per filter change; reused on every hover.
+    var cachedFilteredConnSet = new Set();   // connection indices whose edge should be hidden
+    var cachedNodeVisibility  = {};          // code -> bool
 
+    function rebuildFilterCache() {{
+        cachedFilteredConnSet = new Set();
+        for (var k = 0; k < numConns; k++) {{
+            var sf = connSrcFloats[k], tf = connTgtFloats[k];
+            if ((sf !== null && sf > currentFilter) || (tf !== null && tf > currentFilter)) {{
+                cachedFilteredConnSet.add(k);
+            }}
+        }}
+        cachedNodeVisibility = {{}};
+        for (var i = 0; i < nodeCodes.length; i++) {{
+            var c = nodeCodes[i];
+            var f = nodeFloats[c];
+            cachedNodeVisibility[c] = (f === null || f === undefined || f <= currentFilter);
+        }}
+    }}
+    rebuildFilterCache();
+
+    // Pre-allocated invisible label arrays (cloned on hover, never reallocated)
+    var _invisArr = Array(numConns).fill('rgba(0,0,0,0)');
+
+    // ---------------------------------------------------------------- float filter
     function applyFloatFilter(maxDays) {{
         currentFilter = maxDays;
+        rebuildFilterCache();
 
-        // Nodes
-        var nodeOp = nodeCodes.map(function(c) {{ return nodeVisible(c) ? 1.0 : 0.0; }});
-        var nodeLabelCol = nodeCodes.map(function(c) {{
-            return nodeVisible(c) ? '{node_label_color}' : 'rgba(0,0,0,0)';
-        }});
+        // Nodes — single pass for all three per-point arrays
+        var nodeOp = [], nodeLabelCol = [], nodeLineCol = [], belowCol = [];
+        for (var i = 0; i < nodeCodes.length; i++) {{
+            var c = nodeCodes[i];
+            if (cachedNodeVisibility[c]) {{
+                nodeOp.push(1.0);
+                nodeLabelCol.push('{node_label_color}');
+                nodeLineCol.push('{node_label_color}');
+                belowCol.push('{below_label_color}');
+            }} else {{
+                nodeOp.push(0.0);
+                nodeLabelCol.push('rgba(0,0,0,0)');
+                nodeLineCol.push('rgba(0,0,0,0)');
+                belowCol.push('rgba(0,0,0,0)');
+            }}
+        }}
         Plotly.restyle(gd,
             {{'marker.opacity': [nodeOp], 'textfont.color': [nodeLabelCol],
-              'marker.line.color': [nodeLabelCol]}},
+              'marker.line.color': [nodeLineCol]}},
             [nodeTraceIdx]);
         if (belowTraceIdx >= 0) {{
-            var belowCol = nodeCodes.map(function(c) {{
-                return nodeVisible(c) ? '{below_label_color}' : 'rgba(0,0,0,0)';
-            }});
             Plotly.restyle(gd, {{'textfont.color': [belowCol]}}, [belowTraceIdx]);
         }}
 
-        // Edges — hide if either endpoint exceeds filter
-        var showLineIdx = [], showArrowIdx = [], hideLineIdx = [], hideArrowIdx = [];
-        for (var k = 0; k < numConns; k++) {{
-            var sf = connSrcFloats[k], tf = connTgtFloats[k];
-            var show = (sf === null || sf <= maxDays) && (tf === null || tf <= maxDays);
-            if (show) {{
-                showLineIdx.push(edgeLineIndices[k]);
-                showArrowIdx.push(edgeArrowIndices[k]);
-            }} else {{
-                hideLineIdx.push(edgeLineIndices[k]);
-                hideArrowIdx.push(edgeArrowIndices[k]);
+        // Edges — 2 batched restyle calls covering all line/arrow traces
+        if (numConns > 0) {{
+            var lineColors = [], lineOp = [], arrowColors = [], arrowOp = [];
+            for (var k = 0; k < numConns; k++) {{
+                var hide = cachedFilteredConnSet.has(k);
+                lineColors.push('{default_edge_color}');
+                arrowColors.push('{default_edge_color}');
+                lineOp.push(hide ? 0.0 : 1.0);
+                arrowOp.push(hide ? 0.0 : 1.0);
             }}
+            Plotly.restyle(gd, {{'line.color': lineColors, opacity: lineOp}}, edgeLineIndices);
+            Plotly.restyle(gd, {{'marker.color': arrowColors, opacity: arrowOp}}, edgeArrowIndices);
         }}
-        if (showLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{default_edge_color}', opacity: 1.0}}, showLineIdx);
-        if (showArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{default_edge_color}', opacity: 1.0}}, showArrowIdx);
-        if (hideLineIdx.length)  Plotly.restyle(gd, {{opacity: 0.0}}, hideLineIdx);
-        if (hideArrowIdx.length) Plotly.restyle(gd, {{opacity: 0.0}}, hideArrowIdx);
 
-        // Hide float labels (hover will re-show relevant ones)
+        // Hide float labels
         if (predLabelTraceIdx >= 0) {{
             Plotly.restyle(gd, {{'textfont.color': 'rgba(0,0,0,0)'}}, [predLabelTraceIdx, succLabelTraceIdx]);
         }}
@@ -168,102 +193,104 @@ def _build_hover_js(js_data: dict) -> str:
 
     // ---------------------------------------------------------------- hover logic (shared by chart hover + picklist)
     function applyHover(code) {{
-        // --- edges (respect float filter) ---
-        var visSuccConnIdx = (succConnMap[code] || []).filter(function(k) {{
-            var tf = connTgtFloats[k];
-            return tf === null || tf <= currentFilter;
+        // Filter-passing successor/predecessor connection indices
+        var visSuccConn = new Set(), visPredConn = new Set();
+        (succConnMap[code] || []).forEach(function(k) {{
+            if (!cachedFilteredConnSet.has(k)) visSuccConn.add(k);
         }});
-        var visPredConnIdx = (predConnMap[code] || []).filter(function(k) {{
-            var sf = connSrcFloats[k];
-            return sf === null || sf <= currentFilter;
-        }});
-
-        var visConnTraceSet = new Set();
-        visSuccConnIdx.forEach(function(k) {{
-            visConnTraceSet.add(edgeLineIndices[k]);
-            visConnTraceSet.add(edgeArrowIndices[k]);
-        }});
-        visPredConnIdx.forEach(function(k) {{
-            visConnTraceSet.add(edgeLineIndices[k]);
-            visConnTraceSet.add(edgeArrowIndices[k]);
+        (predConnMap[code] || []).forEach(function(k) {{
+            if (!cachedFilteredConnSet.has(k)) visPredConn.add(k);
         }});
 
-        var filteredOutSet = new Set();
+        // Edges — 2 batched restyle calls
+        var lineColors = [], lineOp = [], arrowColors = [], arrowOp = [];
         for (var k = 0; k < numConns; k++) {{
-            var sf = connSrcFloats[k], tf2 = connTgtFloats[k];
-            if ((sf !== null && sf > currentFilter) || (tf2 !== null && tf2 > currentFilter)) {{
-                filteredOutSet.add(edgeLineIndices[k]);
-                filteredOutSet.add(edgeArrowIndices[k]);
+            if (visSuccConn.has(k)) {{
+                lineColors.push('{succ_color}');  arrowColors.push('{succ_color}');
+                lineOp.push(1.0);                  arrowOp.push(1.0);
+            }} else if (visPredConn.has(k)) {{
+                lineColors.push('{pred_color}');  arrowColors.push('{pred_color}');
+                lineOp.push(1.0);                  arrowOp.push(1.0);
+            }} else if (cachedFilteredConnSet.has(k)) {{
+                lineColors.push('{default_edge_color}');  arrowColors.push('{default_edge_color}');
+                lineOp.push(0.0);                          arrowOp.push(0.0);
+            }} else {{
+                lineColors.push('{default_edge_color}');  arrowColors.push('{default_edge_color}');
+                lineOp.push(0.04);                         arrowOp.push(0.04);
             }}
         }}
-
-        var dimIdx  = allEdgeIdx.filter(function(i) {{ return !visConnTraceSet.has(i) && !filteredOutSet.has(i); }});
-        var hideIdx = allEdgeIdx.filter(function(i) {{ return filteredOutSet.has(i); }});
-        if (dimIdx.length)  Plotly.restyle(gd, {{opacity: 0.04}}, dimIdx);
-        if (hideIdx.length) Plotly.restyle(gd, {{opacity: 0.0}},  hideIdx);
-
-        var succLineIdx  = visSuccConnIdx.map(function(k) {{ return edgeLineIndices[k]; }});
-        var succArrowIdx = visSuccConnIdx.map(function(k) {{ return edgeArrowIndices[k]; }});
-        if (succLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{succ_color}', opacity: 1.0}}, succLineIdx);
-        if (succArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{succ_color}', opacity: 1.0}}, succArrowIdx);
-
-        var predLineIdx  = visPredConnIdx.map(function(k) {{ return edgeLineIndices[k]; }});
-        var predArrowIdx = visPredConnIdx.map(function(k) {{ return edgeArrowIndices[k]; }});
-        if (predLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{pred_color}', opacity: 1.0}}, predLineIdx);
-        if (predArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{pred_color}', opacity: 1.0}}, predArrowIdx);
-
-        var connNodes = new Set(nodeNeighbors[code] || []);
-        connNodes.add(code);
-
-        var markerOpacities = nodeCodes.map(function(c) {{
-            if (!nodeVisible(c)) return 0.0;
-            return connNodes.has(c) ? 1.0 : 0.06;
-        }});
-        var labelColors = nodeCodes.map(function(c) {{
-            if (!nodeVisible(c)) return 'rgba(0,0,0,0)';
-            if (c === code) return 'red';
-            return connNodes.has(c) ? '{node_label_color}' : 'rgba(0,0,0,0.04)';
-        }});
-        var markerLineColors = nodeCodes.map(function(c) {{
-            if (!nodeVisible(c)) return 'rgba(0,0,0,0)';
-            return c === code ? 'red' : '{node_label_color}';
-        }});
-        Plotly.restyle(gd,
-            {{'marker.opacity': [markerOpacities], 'textfont.color': [labelColors],
-              'marker.line.color': [markerLineColors]}},
-            [nodeTraceIdx]);
-
-        if (belowTraceIdx >= 0) {{
-            var belowColors = nodeCodes.map(function(c) {{
-                if (!nodeVisible(c)) return 'rgba(0,0,0,0)';
-                if (c === code) return 'red';
-                return connNodes.has(c) ? '{below_label_color}' : 'rgba(0,0,0,0.04)';
-            }});
-            Plotly.restyle(gd, {{'textfont.color': [belowColors]}}, [belowTraceIdx]);
+        if (numConns > 0) {{
+            Plotly.restyle(gd, {{'line.color': lineColors, opacity: lineOp}}, edgeLineIndices);
+            Plotly.restyle(gd, {{'marker.color': arrowColors, opacity: arrowOp}}, edgeArrowIndices);
         }}
 
-        if (predLabelTraceIdx >= 0) {{
-            var invis = 'rgba(0,0,0,0)';
-            var predLabelColors = Array(numConns).fill(invis);
-            visPredConnIdx.forEach(function(k) {{ predLabelColors[k] = '{pred_color}'; }});
-            Plotly.restyle(gd, {{'textfont.color': [predLabelColors]}}, [predLabelTraceIdx]);
+        // Nodes — single pass for all arrays
+        var connNodes = new Set(nodeNeighbors[code] || []);
+        connNodes.add(code);
+        var markerOp = [], labelCol = [], lineCol = [], belowCol = [];
+        for (var i = 0; i < nodeCodes.length; i++) {{
+            var c = nodeCodes[i];
+            if (!cachedNodeVisibility[c]) {{
+                markerOp.push(0.0);
+                labelCol.push('rgba(0,0,0,0)');
+                lineCol.push('rgba(0,0,0,0)');
+                belowCol.push('rgba(0,0,0,0)');
+            }} else if (c === code) {{
+                markerOp.push(1.0);
+                labelCol.push('red');
+                lineCol.push('red');
+                belowCol.push('red');
+            }} else if (connNodes.has(c)) {{
+                markerOp.push(1.0);
+                labelCol.push('{node_label_color}');
+                lineCol.push('{node_label_color}');
+                belowCol.push('{below_label_color}');
+            }} else {{
+                markerOp.push(0.06);
+                labelCol.push('rgba(0,0,0,0.04)');
+                lineCol.push('{node_label_color}');
+                belowCol.push('rgba(0,0,0,0.04)');
+            }}
+        }}
+        Plotly.restyle(gd,
+            {{'marker.opacity': [markerOp], 'textfont.color': [labelCol],
+              'marker.line.color': [lineCol]}},
+            [nodeTraceIdx]);
+        if (belowTraceIdx >= 0) {{
+            Plotly.restyle(gd, {{'textfont.color': [belowCol]}}, [belowTraceIdx]);
+        }}
 
-            var succLabelColors = Array(numConns).fill(invis);
-            visSuccConnIdx.forEach(function(k) {{ succLabelColors[k] = '{succ_color}'; }});
-            Plotly.restyle(gd, {{'textfont.color': [succLabelColors]}}, [succLabelTraceIdx]);
+        // Float labels — clone pre-allocated arrays, set visible entries
+        if (predLabelTraceIdx >= 0) {{
+            var predLabelCol = _invisArr.slice();
+            visPredConn.forEach(function(k) {{ predLabelCol[k] = '{pred_color}'; }});
+            Plotly.restyle(gd, {{'textfont.color': [predLabelCol]}}, [predLabelTraceIdx]);
+
+            var succLabelCol = _invisArr.slice();
+            visSuccConn.forEach(function(k) {{ succLabelCol[k] = '{succ_color}'; }});
+            Plotly.restyle(gd, {{'textfont.color': [succLabelCol]}}, [succLabelTraceIdx]);
         }}
     }}
 
-    // ---------------------------------------------------------------- chart hover / unhover
+    // ---------------------------------------------------------------- chart hover / unhover (debounced)
+    var _hoverTimer = null;
+    var _lastHoveredCode = null;
+
     gd.on('plotly_hover', function(eventData) {{
         var code = eventData.points[0].customdata;
-        if (!code) return;
-        var sel = document.getElementById('activity-select');
-        if (sel) sel.value = code;
-        applyHover(code);
+        if (!code || code === _lastHoveredCode) return;
+        clearTimeout(_hoverTimer);
+        _hoverTimer = setTimeout(function() {{
+            _lastHoveredCode = code;
+            var sel = document.getElementById('activity-select');
+            if (sel) sel.value = code;
+            applyHover(code);
+        }}, 40);
     }});
 
     gd.on('plotly_unhover', function() {{
+        clearTimeout(_hoverTimer);
+        _lastHoveredCode = null;
         var sel = document.getElementById('activity-select');
         if (sel && sel.value) return;   // keep highlight if picklist is active
         applyFloatFilter(currentFilter);
@@ -274,7 +301,6 @@ def _build_hover_js(js_data: dict) -> str:
     var floatInput= document.getElementById('float-input');
 
     function applyFilterValue(v) {{
-        // v is a number or Infinity
         if (slider) slider.value = isFinite(v) ? Math.min(v, sliderMax) : sliderMax;
         if (floatInput) floatInput.value = isFinite(v) ? Math.round(v) : '';
         applyFloatFilter(v);
