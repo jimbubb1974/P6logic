@@ -99,15 +99,20 @@ def _build_hover_js(js_data: dict) -> str:
             return connNodes.has(c) ? 1.0 : 0.06;
         }});
         var labelColors = nodeCodes.map(function(c) {{
+            if (c === code) return 'red';
             return connNodes.has(c) ? '{node_label_color}' : 'rgba(0,0,0,0.04)';
         }});
+        var markerLineColors = nodeCodes.map(function(c) {{
+            return c === code ? 'red' : '{node_label_color}';
+        }});
         Plotly.restyle(gd,
-            {{'marker.opacity': [markerOpacities], 'textfont.color': [labelColors]}},
+            {{'marker.opacity': [markerOpacities], 'textfont.color': [labelColors], 'marker.line.color': [markerLineColors]}},
             [nodeTraceIdx]);
 
         // --- below labels (if present) ---
         if (belowTraceIdx >= 0) {{
             var belowColors = nodeCodes.map(function(c) {{
+                if (c === code) return 'red';
                 return connNodes.has(c) ? '{below_label_color}' : 'rgba(0,0,0,0.04)';
             }});
             Plotly.restyle(gd, {{'textfont.color': [belowColors]}}, [belowTraceIdx]);
@@ -120,7 +125,7 @@ def _build_hover_js(js_data: dict) -> str:
         Plotly.restyle(gd, {{opacity: edgeVals}}, allEdgeIdx);
         // Restore nodes + above labels (single value = all points)
         Plotly.restyle(gd,
-            {{'marker.opacity': 1.0, 'textfont.color': '{node_label_color}'}},
+            {{'marker.opacity': 1.0, 'textfont.color': '{node_label_color}', 'marker.line.color': '{node_label_color}'}},
             [nodeTraceIdx]);
         // Restore below labels
         if (belowTraceIdx >= 0) {{
