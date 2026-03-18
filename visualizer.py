@@ -675,7 +675,7 @@ def write_html(fig: go.Figure, output_path: str, js_data: dict) -> None:
 
     slider_max = js_data["slider_max"]
     slider_html = f"""
-<div id="float-filter-bar" style="font-family:sans-serif;padding:10px 24px;padding-right:250px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:16px;">
+<div id="float-filter-bar" style="font-family:sans-serif;padding:10px 24px;padding-right:175px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:16px;">
   <span style="font-size:13px;color:#475569;white-space:nowrap;font-weight:600;">Float filter</span>
   <input type="range" id="float-slider" min="0" max="{slider_max}" step="1" value="{slider_max}"
          style="width:320px;accent-color:#2563eb;cursor:pointer;">
@@ -694,10 +694,10 @@ def write_html(fig: go.Figure, output_path: str, js_data: dict) -> None:
     picker_html = f"""
 <div id="activity-picker" style="position:fixed;right:0;top:50%;transform:translateY(-50%);
      background:#ffffff;border:1px solid #cbd5e1;border-right:none;border-radius:8px 0 0 8px;
-     padding:12px 10px;font-family:sans-serif;box-shadow:-2px 0 8px rgba(0,0,0,0.08);z-index:999;min-width:200px;">
-  <div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em;">Jump to activity</div>
+     padding:8px 6px;font-family:sans-serif;box-shadow:-2px 0 8px rgba(0,0,0,0.08);z-index:999;width:150px;">
+  <div style="font-size:10px;font-weight:700;color:#475569;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Jump to activity</div>
   <select id="activity-select" size="18"
-          style="width:100%;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;
+          style="width:100%;font-size:10px;border:1px solid #cbd5e1;border-radius:4px;
                  outline:none;cursor:pointer;background:#f8fafc;color:#1e3a8a;">
     <option value="">\u2014 clear \u2014</option>
     {options_html}
