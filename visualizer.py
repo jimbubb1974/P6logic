@@ -269,18 +269,36 @@ def _build_hover_js(js_data: dict) -> str:
         applyFloatFilter(currentFilter);
     }});
 
-    // ---------------------------------------------------------------- float slider
-    var slider  = document.getElementById('float-slider');
-    var valLabel= document.getElementById('float-val');
+    // ---------------------------------------------------------------- float slider + manual input
+    var slider    = document.getElementById('float-slider');
+    var floatInput= document.getElementById('float-input');
+
+    function applyFilterValue(v) {{
+        // v is a number or Infinity
+        if (slider) slider.value = isFinite(v) ? Math.min(v, sliderMax) : sliderMax;
+        if (floatInput) floatInput.value = isFinite(v) ? Math.round(v) : '';
+        applyFloatFilter(v);
+    }}
+
     if (slider) {{
         slider.addEventListener('input', function() {{
             var v = parseInt(this.value);
-            if (v >= sliderMax) {{
-                valLabel.textContent = 'All activities';
+            applyFilterValue(v >= sliderMax ? Infinity : v);
+        }});
+    }}
+
+    if (floatInput) {{
+        floatInput.addEventListener('input', function() {{
+            var raw = this.value.trim();
+            if (raw === '') {{
+                if (slider) slider.value = sliderMax;
                 applyFloatFilter(Infinity);
             }} else {{
-                valLabel.textContent = '\u2264 ' + v + 'd float';
-                applyFloatFilter(v);
+                var v = parseFloat(raw);
+                if (!isNaN(v) && v >= 0) {{
+                    if (slider) slider.value = Math.min(Math.round(v), sliderMax);
+                    applyFloatFilter(v);
+                }}
             }}
         }});
     }}
@@ -675,11 +693,13 @@ def write_html(fig: go.Figure, output_path: str, js_data: dict) -> None:
 
     slider_max = js_data["slider_max"]
     slider_html = f"""
-<div id="float-filter-bar" style="font-family:sans-serif;padding:10px 24px;padding-right:175px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:16px;">
+<div id="float-filter-bar" style="font-family:sans-serif;padding:10px 24px;padding-right:175px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:12px;">
   <span style="font-size:13px;color:#475569;white-space:nowrap;font-weight:600;">Float filter</span>
   <input type="range" id="float-slider" min="0" max="{slider_max}" step="1" value="{slider_max}"
          style="width:320px;accent-color:#2563eb;cursor:pointer;">
-  <span id="float-val" style="font-size:13px;font-weight:700;color:#1e3a8a;min-width:80px;">All activities</span>
+  <input type="number" id="float-input" min="0" max="{slider_max}" step="1" placeholder="days"
+         style="width:70px;padding:3px 6px;font-size:13px;border:1px solid #cbd5e1;border-radius:4px;color:#1e3a8a;text-align:center;">
+  <span style="font-size:12px;color:#94a3b8;">days&nbsp;(blank&nbsp;=&nbsp;all)</span>
 </div>
 """
     # Build activity picklist sorted alphabetically by display name
