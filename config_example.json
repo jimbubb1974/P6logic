@@ -1,0 +1,25 @@
+{
+  "xer_file": "project.xer",
+
+  "_comment": "Use key_activities_file OR key_activities (file takes precedence if both are set)",
+  "key_activities_file": "activities.xlsx",
+
+  "key_activities": [
+    "A1000",
+    "A1050",
+    "M0010"
+  ],
+  "date_field": "early_start_date",
+  "show_intermediate": false,
+  "drop_unconnected": true,
+  "max_float_days": null,
+  "show_activity_name": false,
+  "logic_check": false,
+  "logic_check_output": "logic_check.txt",
+  "output": "diagram.html",
+  "y_positions": {
+    "A1000": 0,
+    "A1050": 1.5,
+    "M0010": 3
+  }
+}
