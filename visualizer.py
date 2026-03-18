@@ -105,6 +105,16 @@ def _build_hover_js(js_data: dict) -> str:
     var gd = document.querySelector('.js-plotly-plot');
     if (!gd || typeof gd.on !== 'function') return;
 
+    // Resize chart so it doesn't overlap the picklist panel
+    function fitChartWidth() {{
+        var picker = document.getElementById('activity-picker');
+        if (!picker) return;
+        var pickerW = picker.offsetWidth + 12;
+        Plotly.relayout(gd, {{width: window.innerWidth - pickerW}});
+    }}
+    fitChartWidth();
+    window.addEventListener('resize', fitChartWidth);
+
     var currentFilter = Infinity;   // no filter by default
 
     // ---------------------------------------------------------------- float filter
@@ -665,7 +675,7 @@ def write_html(fig: go.Figure, output_path: str, js_data: dict) -> None:
 
     slider_max = js_data["slider_max"]
     slider_html = f"""
-<div id="float-filter-bar" style="font-family:sans-serif;padding:10px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:16px;">
+<div id="float-filter-bar" style="font-family:sans-serif;padding:10px 24px;padding-right:250px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:16px;">
   <span style="font-size:13px;color:#475569;white-space:nowrap;font-weight:600;">Float filter</span>
   <input type="range" id="float-slider" min="0" max="{slider_max}" step="1" value="{slider_max}"
          style="width:320px;accent-color:#2563eb;cursor:pointer;">
