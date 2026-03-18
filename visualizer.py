@@ -18,8 +18,9 @@ _KEY_BORDER = "#1e3a8a"
 _INTER_COLOR = "#94a3b8"
 _INTER_BORDER = "#64748b"
 _EDGE_COLOR = "rgba(30, 58, 138, 0.35)"
-_EDGE_COLOR_BRIGHT = "rgba(30, 58, 138, 0.9)"
 _INTER_EDGE_COLOR = "rgba(148, 163, 184, 0.4)"
+_SUCC_EDGE_COLOR = "rgba(37, 99, 235, 0.9)"    # blue  — successor arrows on hover
+_PRED_EDGE_COLOR = "rgba(147, 51, 234, 0.9)"    # purple — predecessor arrows on hover
 
 
 def _parse_date(s: Optional[str]) -> Optional[datetime]:
@@ -47,23 +48,34 @@ def _build_hover_js(js_data: dict) -> str:
     Return a JavaScript snippet injected before </body>.
 
     On hover over a key node:
-      - Connected edges brighten; unconnected edges fade to near-invisible.
+      - Successor arrows (outgoing) turn blue; predecessor arrows (incoming) turn purple.
+      - Unconnected edges fade to near-invisible.
       - Connected nodes stay fully visible; unconnected nodes + their labels fade.
+      - The hovered node's outline and labels turn red.
     On unhover: everything is restored.
     """
-    edge_map_json        = json.dumps(js_data["edge_map"])
+    succ_edge_map_json   = json.dumps(js_data["succ_edge_map"])
+    pred_edge_map_json   = json.dumps(js_data["pred_edge_map"])
     all_edge_json        = json.dumps(js_data["all_edge_indices"])
+    edge_line_json       = json.dumps(js_data["edge_line_indices"])
+    edge_arrow_json      = json.dumps(js_data["edge_arrow_indices"])
     node_neighbors_json  = json.dumps(js_data["node_neighbors"])
     node_codes_json      = json.dumps(js_data["node_codes"])
     node_trace_idx       = js_data["node_trace_idx"]
     below_trace_idx      = js_data["below_label_trace_idx"]   # -1 if absent
     node_label_color     = _KEY_BORDER        # "#1e3a8a"
     below_label_color    = "#64748b"
+    default_edge_color   = _EDGE_COLOR
+    succ_color           = _SUCC_EDGE_COLOR
+    pred_color           = _PRED_EDGE_COLOR
 
     return f"""
 (function() {{
-    var edgeMap       = {edge_map_json};
+    var succEdgeMap   = {succ_edge_map_json};
+    var predEdgeMap   = {pred_edge_map_json};
     var allEdgeIdx    = {all_edge_json};
+    var edgeLineSet   = new Set({edge_line_json});
+    var edgeArrowSet  = new Set({edge_arrow_json});
     var nodeNeighbors = {node_neighbors_json};
     var nodeCodes     = {node_codes_json};
     var nodeTraceIdx  = {node_trace_idx};
@@ -72,28 +84,33 @@ def _build_hover_js(js_data: dict) -> str:
     var gd = document.querySelector('.js-plotly-plot');
     if (!gd || typeof gd.on !== 'function') return;
 
-    // Capture default edge opacities.
-    var defEdgeOpacity = {{}};
-    allEdgeIdx.forEach(function(i) {{
-        var t = gd.data[i];
-        defEdgeOpacity[i] = (t && t.opacity != null) ? t.opacity : 1.0;
-    }});
-
     gd.on('plotly_hover', function(eventData) {{
         var pt   = eventData.points[0];
         var code = pt.customdata;
         if (!code) return;
 
         // --- edges ---
-        var connEdges    = new Set(edgeMap[code] || []);
-        var dimEdgeIdx   = allEdgeIdx.filter(function(i) {{ return !connEdges.has(i); }});
-        var brightEdgeIdx= allEdgeIdx.filter(function(i) {{ return  connEdges.has(i); }});
-        if (dimEdgeIdx.length)    Plotly.restyle(gd, {{opacity: 0.04}}, dimEdgeIdx);
-        if (brightEdgeIdx.length) Plotly.restyle(gd, {{opacity: 1.0}},  brightEdgeIdx);
+        var succIndices = succEdgeMap[code] || [];
+        var predIndices = predEdgeMap[code] || [];
+        var connSet = new Set(succIndices.concat(predIndices));
+        var dimIdx  = allEdgeIdx.filter(function(i) {{ return !connSet.has(i); }});
+        if (dimIdx.length) Plotly.restyle(gd, {{opacity: 0.04}}, dimIdx);
+
+        // Successor arrows → blue
+        var succLineIdx  = succIndices.filter(function(i) {{ return  edgeLineSet.has(i); }});
+        var succArrowIdx = succIndices.filter(function(i) {{ return edgeArrowSet.has(i); }});
+        if (succLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{succ_color}', opacity: 1.0}}, succLineIdx);
+        if (succArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{succ_color}', opacity: 1.0}}, succArrowIdx);
+
+        // Predecessor arrows → purple
+        var predLineIdx  = predIndices.filter(function(i) {{ return  edgeLineSet.has(i); }});
+        var predArrowIdx = predIndices.filter(function(i) {{ return edgeArrowSet.has(i); }});
+        if (predLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{pred_color}', opacity: 1.0}}, predLineIdx);
+        if (predArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{pred_color}', opacity: 1.0}}, predArrowIdx);
 
         // --- nodes + above labels ---
         var connNodes = new Set(nodeNeighbors[code] || []);
-        connNodes.add(code);   // always keep the hovered node fully visible
+        connNodes.add(code);
 
         var markerOpacities = nodeCodes.map(function(c) {{
             return connNodes.has(c) ? 1.0 : 0.06;
@@ -120,10 +137,12 @@ def _build_hover_js(js_data: dict) -> str:
     }});
 
     gd.on('plotly_unhover', function() {{
-        // Restore edges
-        var edgeVals = allEdgeIdx.map(function(i) {{ return defEdgeOpacity[i]; }});
-        Plotly.restyle(gd, {{opacity: edgeVals}}, allEdgeIdx);
-        // Restore nodes + above labels (single value = all points)
+        // Restore edge colors and opacity
+        var lineIdx  = allEdgeIdx.filter(function(i) {{ return  edgeLineSet.has(i); }});
+        var arrowIdx = allEdgeIdx.filter(function(i) {{ return edgeArrowSet.has(i); }});
+        if (lineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{default_edge_color}', opacity: 1.0}}, lineIdx);
+        if (arrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{default_edge_color}', opacity: 1.0}}, arrowIdx);
+        // Restore nodes + above labels
         Plotly.restyle(gd,
             {{'marker.opacity': 1.0, 'textfont.color': '{node_label_color}', 'marker.line.color': '{node_label_color}'}},
             [nodeTraceIdx]);
@@ -159,8 +178,11 @@ def build_figure(
     trace_idx = 0
 
     # JS data
-    edge_map: dict[str, list[int]] = {}
+    succ_edge_map: dict[str, list[int]] = {}   # source_code -> trace indices (outgoing)
+    pred_edge_map: dict[str, list[int]] = {}   # target_code -> trace indices (incoming)
     all_edge_indices: list[int] = []
+    edge_line_indices: list[int] = []
+    edge_arrow_indices: list[int] = []
     node_trace_idx: int = -1
     below_label_trace_idx: int = -1
 
@@ -217,9 +239,10 @@ def build_figure(
             hoverinfo="skip",
             showlegend=False,
         ))
-        for code in (conn.source_code, conn.target_code):
-            edge_map.setdefault(code, []).append(trace_idx)
+        succ_edge_map.setdefault(conn.source_code, []).append(trace_idx)
+        pred_edge_map.setdefault(conn.target_code, []).append(trace_idx)
         all_edge_indices.append(trace_idx)
+        edge_line_indices.append(trace_idx)
         trace_idx += 1
 
         # Arrowhead marker at target
@@ -237,9 +260,10 @@ def build_figure(
             hoverinfo="skip",
             showlegend=False,
         ))
-        for code in (conn.source_code, conn.target_code):
-            edge_map.setdefault(code, []).append(trace_idx)
+        succ_edge_map.setdefault(conn.source_code, []).append(trace_idx)
+        pred_edge_map.setdefault(conn.target_code, []).append(trace_idx)
         all_edge_indices.append(trace_idx)
+        edge_arrow_indices.append(trace_idx)
         trace_idx += 1
 
     # ------------------------------------------------------------------ intermediate nodes
@@ -408,8 +432,11 @@ def build_figure(
     )
 
     js_data = {
-        "edge_map": edge_map,
+        "succ_edge_map": succ_edge_map,
+        "pred_edge_map": pred_edge_map,
         "all_edge_indices": all_edge_indices,
+        "edge_line_indices": edge_line_indices,
+        "edge_arrow_indices": edge_arrow_indices,
         "node_trace_idx": node_trace_idx,
         "node_codes": kcodes,
         "node_neighbors": node_neighbors,
