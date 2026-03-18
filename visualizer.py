@@ -156,24 +156,18 @@ def _build_hover_js(js_data: dict) -> str:
         }}
     }}
 
-    // ---------------------------------------------------------------- hover
-    gd.on('plotly_hover', function(eventData) {{
-        var pt   = eventData.points[0];
-        var code = pt.customdata;
-        if (!code) return;
-
+    // ---------------------------------------------------------------- hover logic (shared by chart hover + picklist)
+    function applyHover(code) {{
         // --- edges (respect float filter) ---
-        // Only show arrows where the connected node passes the current filter
         var visSuccConnIdx = (succConnMap[code] || []).filter(function(k) {{
             var tf = connTgtFloats[k];
             return tf === null || tf <= currentFilter;
         }});
-        var visPredConnIdx = (visPredConnIdx = (predConnMap[code] || []).filter(function(k) {{
+        var visPredConnIdx = (predConnMap[code] || []).filter(function(k) {{
             var sf = connSrcFloats[k];
             return sf === null || sf <= currentFilter;
-        }}));
+        }});
 
-        // Build set of visible connected trace indices
         var visConnTraceSet = new Set();
         visSuccConnIdx.forEach(function(k) {{
             visConnTraceSet.add(edgeLineIndices[k]);
@@ -184,7 +178,6 @@ def _build_hover_js(js_data: dict) -> str:
             visConnTraceSet.add(edgeArrowIndices[k]);
         }});
 
-        // Build set of currently filtered-out trace indices (stay hidden at 0)
         var filteredOutSet = new Set();
         for (var k = 0; k < numConns; k++) {{
             var sf = connSrcFloats[k], tf2 = connTgtFloats[k];
@@ -199,19 +192,16 @@ def _build_hover_js(js_data: dict) -> str:
         if (dimIdx.length)  Plotly.restyle(gd, {{opacity: 0.04}}, dimIdx);
         if (hideIdx.length) Plotly.restyle(gd, {{opacity: 0.0}},  hideIdx);
 
-        // Successor arrows → blue
         var succLineIdx  = visSuccConnIdx.map(function(k) {{ return edgeLineIndices[k]; }});
         var succArrowIdx = visSuccConnIdx.map(function(k) {{ return edgeArrowIndices[k]; }});
         if (succLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{succ_color}', opacity: 1.0}}, succLineIdx);
         if (succArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{succ_color}', opacity: 1.0}}, succArrowIdx);
 
-        // Predecessor arrows → purple
         var predLineIdx  = visPredConnIdx.map(function(k) {{ return edgeLineIndices[k]; }});
         var predArrowIdx = visPredConnIdx.map(function(k) {{ return edgeArrowIndices[k]; }});
         if (predLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{pred_color}', opacity: 1.0}}, predLineIdx);
         if (predArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{pred_color}', opacity: 1.0}}, predArrowIdx);
 
-        // --- nodes + above labels (respect filter) ---
         var connNodes = new Set(nodeNeighbors[code] || []);
         connNodes.add(code);
 
@@ -233,7 +223,6 @@ def _build_hover_js(js_data: dict) -> str:
               'marker.line.color': [markerLineColors]}},
             [nodeTraceIdx]);
 
-        // --- below labels ---
         if (belowTraceIdx >= 0) {{
             var belowColors = nodeCodes.map(function(c) {{
                 if (!nodeVisible(c)) return 'rgba(0,0,0,0)';
@@ -243,7 +232,6 @@ def _build_hover_js(js_data: dict) -> str:
             Plotly.restyle(gd, {{'textfont.color': [belowColors]}}, [belowTraceIdx]);
         }}
 
-        // --- float labels on arrows (only for filter-passing connections) ---
         if (predLabelTraceIdx >= 0) {{
             var invis = 'rgba(0,0,0,0)';
             var predLabelColors = Array(numConns).fill(invis);
@@ -254,10 +242,20 @@ def _build_hover_js(js_data: dict) -> str:
             visSuccConnIdx.forEach(function(k) {{ succLabelColors[k] = '{succ_color}'; }});
             Plotly.restyle(gd, {{'textfont.color': [succLabelColors]}}, [succLabelTraceIdx]);
         }}
+    }}
+
+    // ---------------------------------------------------------------- chart hover / unhover
+    gd.on('plotly_hover', function(eventData) {{
+        var code = eventData.points[0].customdata;
+        if (!code) return;
+        var sel = document.getElementById('activity-select');
+        if (sel) sel.value = code;
+        applyHover(code);
     }});
 
-    // ---------------------------------------------------------------- unhover
     gd.on('plotly_unhover', function() {{
+        var sel = document.getElementById('activity-select');
+        if (sel && sel.value) return;   // keep highlight if picklist is active
         applyFloatFilter(currentFilter);
     }});
 
@@ -273,6 +271,19 @@ def _build_hover_js(js_data: dict) -> str:
             }} else {{
                 valLabel.textContent = '\u2264 ' + v + 'd float';
                 applyFloatFilter(v);
+            }}
+        }});
+    }}
+
+    // ---------------------------------------------------------------- activity picklist
+    var actSelect = document.getElementById('activity-select');
+    if (actSelect) {{
+        actSelect.addEventListener('change', function() {{
+            var code = this.value;
+            if (code) {{
+                applyHover(code);
+            }} else {{
+                applyFloatFilter(currentFilter);
             }}
         }});
     }}
@@ -496,6 +507,7 @@ def build_figure(
     kx, ky, kcodes, knames, khover = [], [], [], [], []
     above_labels: list[str] = []   # text rendered above each node (bold)
     below_labels: list[str] = []   # text rendered below each node (small grey)
+    node_display_names: list[str] = []  # label shown in the activity picklist
 
     for tid in key_task_ids:
         if tid not in positions:
@@ -516,11 +528,13 @@ def build_figure(
             # Shorthand is the hero label; activity ID shown below in grey
             above_labels.append(f"<b>{shorthand}</b>")
             below_labels.append(task.task_code)
+            node_display_names.append(f"{task.task_code} \u2014 {shorthand}")
         else:
             # Activity ID is the hero label
             above_labels.append(f"<b>{task.task_code}</b>")
             # Show activity name below only when the flag is set
             below_labels.append(task.task_name if show_activity_name else "")
+            node_display_names.append(task.task_code)
 
         tf = task.total_float_hr_cnt
         tf_days = tf / 8 if tf is not None else None
@@ -632,6 +646,7 @@ def build_figure(
         "succ_label_trace_idx": succ_label_trace_idx,
         "node_trace_idx": node_trace_idx,
         "node_codes": kcodes,
+        "node_display_names": node_display_names,
         "node_neighbors": node_neighbors,
         "node_floats": node_floats,
         "conn_src_floats": conn_src_floats,
@@ -657,7 +672,29 @@ def write_html(fig: go.Figure, output_path: str, js_data: dict) -> None:
   <span id="float-val" style="font-size:13px;font-weight:700;color:#1e3a8a;min-width:80px;">All activities</span>
 </div>
 """
-    html = html.replace("<body>", "<body>" + slider_html, 1)
+    # Build activity picklist sorted alphabetically by display name
+    pairs = sorted(
+        zip(js_data["node_codes"], js_data["node_display_names"]),
+        key=lambda p: p[1].lower(),
+    )
+    options_html = "\n    ".join(
+        f'<option value="{code}">{name}</option>'
+        for code, name in pairs
+    )
+    picker_html = f"""
+<div id="activity-picker" style="position:fixed;right:0;top:50%;transform:translateY(-50%);
+     background:#ffffff;border:1px solid #cbd5e1;border-right:none;border-radius:8px 0 0 8px;
+     padding:12px 10px;font-family:sans-serif;box-shadow:-2px 0 8px rgba(0,0,0,0.08);z-index:999;min-width:200px;">
+  <div style="font-size:11px;font-weight:700;color:#475569;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em;">Jump to activity</div>
+  <select id="activity-select" size="18"
+          style="width:100%;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;
+                 outline:none;cursor:pointer;background:#f8fafc;color:#1e3a8a;">
+    <option value="">\u2014 clear \u2014</option>
+    {options_html}
+  </select>
+</div>
+"""
+    html = html.replace("<body>", "<body>" + slider_html + picker_html, 1)
 
     js = _build_hover_js(js_data)
     script_block = f"\n<script type=\"text/javascript\">{js}</script>\n"
