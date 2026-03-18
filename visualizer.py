@@ -162,22 +162,52 @@ def _build_hover_js(js_data: dict) -> str:
         var code = pt.customdata;
         if (!code) return;
 
-        // --- edges ---
-        var succIndices = succEdgeMap[code] || [];
-        var predIndices = predEdgeMap[code] || [];
-        var connSet = new Set(succIndices.concat(predIndices));
-        var dimIdx  = allEdgeIdx.filter(function(i) {{ return !connSet.has(i); }});
-        if (dimIdx.length) Plotly.restyle(gd, {{opacity: 0.04}}, dimIdx);
+        // --- edges (respect float filter) ---
+        // Only show arrows where the connected node passes the current filter
+        var visSuccConnIdx = (succConnMap[code] || []).filter(function(k) {{
+            var tf = connTgtFloats[k];
+            return tf === null || tf <= currentFilter;
+        }});
+        var visPredConnIdx = (visPredConnIdx = (predConnMap[code] || []).filter(function(k) {{
+            var sf = connSrcFloats[k];
+            return sf === null || sf <= currentFilter;
+        }}));
+
+        // Build set of visible connected trace indices
+        var visConnTraceSet = new Set();
+        visSuccConnIdx.forEach(function(k) {{
+            visConnTraceSet.add(edgeLineIndices[k]);
+            visConnTraceSet.add(edgeArrowIndices[k]);
+        }});
+        visPredConnIdx.forEach(function(k) {{
+            visConnTraceSet.add(edgeLineIndices[k]);
+            visConnTraceSet.add(edgeArrowIndices[k]);
+        }});
+
+        // Build set of currently filtered-out trace indices (stay hidden at 0)
+        var filteredOutSet = new Set();
+        for (var k = 0; k < numConns; k++) {{
+            var sf = connSrcFloats[k], tf2 = connTgtFloats[k];
+            if ((sf !== null && sf > currentFilter) || (tf2 !== null && tf2 > currentFilter)) {{
+                filteredOutSet.add(edgeLineIndices[k]);
+                filteredOutSet.add(edgeArrowIndices[k]);
+            }}
+        }}
+
+        var dimIdx  = allEdgeIdx.filter(function(i) {{ return !visConnTraceSet.has(i) && !filteredOutSet.has(i); }});
+        var hideIdx = allEdgeIdx.filter(function(i) {{ return filteredOutSet.has(i); }});
+        if (dimIdx.length)  Plotly.restyle(gd, {{opacity: 0.04}}, dimIdx);
+        if (hideIdx.length) Plotly.restyle(gd, {{opacity: 0.0}},  hideIdx);
 
         // Successor arrows → blue
-        var succLineIdx  = succIndices.filter(function(i) {{ return  edgeLineSet.has(i); }});
-        var succArrowIdx = succIndices.filter(function(i) {{ return edgeArrowSet.has(i); }});
+        var succLineIdx  = visSuccConnIdx.map(function(k) {{ return edgeLineIndices[k]; }});
+        var succArrowIdx = visSuccConnIdx.map(function(k) {{ return edgeArrowIndices[k]; }});
         if (succLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{succ_color}', opacity: 1.0}}, succLineIdx);
         if (succArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{succ_color}', opacity: 1.0}}, succArrowIdx);
 
         // Predecessor arrows → purple
-        var predLineIdx  = predIndices.filter(function(i) {{ return  edgeLineSet.has(i); }});
-        var predArrowIdx = predIndices.filter(function(i) {{ return edgeArrowSet.has(i); }});
+        var predLineIdx  = visPredConnIdx.map(function(k) {{ return edgeLineIndices[k]; }});
+        var predArrowIdx = visPredConnIdx.map(function(k) {{ return edgeArrowIndices[k]; }});
         if (predLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{pred_color}', opacity: 1.0}}, predLineIdx);
         if (predArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{pred_color}', opacity: 1.0}}, predArrowIdx);
 
@@ -213,15 +243,15 @@ def _build_hover_js(js_data: dict) -> str:
             Plotly.restyle(gd, {{'textfont.color': [belowColors]}}, [belowTraceIdx]);
         }}
 
-        // --- float labels on arrows ---
+        // --- float labels on arrows (only for filter-passing connections) ---
         if (predLabelTraceIdx >= 0) {{
             var invis = 'rgba(0,0,0,0)';
             var predLabelColors = Array(numConns).fill(invis);
-            (predConnMap[code] || []).forEach(function(k) {{ predLabelColors[k] = '{pred_color}'; }});
+            visPredConnIdx.forEach(function(k) {{ predLabelColors[k] = '{pred_color}'; }});
             Plotly.restyle(gd, {{'textfont.color': [predLabelColors]}}, [predLabelTraceIdx]);
 
             var succLabelColors = Array(numConns).fill(invis);
-            (succConnMap[code] || []).forEach(function(k) {{ succLabelColors[k] = '{succ_color}'; }});
+            visSuccConnIdx.forEach(function(k) {{ succLabelColors[k] = '{succ_color}'; }});
             Plotly.restyle(gd, {{'textfont.color': [succLabelColors]}}, [succLabelTraceIdx]);
         }}
     }});
