@@ -414,8 +414,8 @@ def build_figure(
         tgt_tf = tgt_task.total_float_hr_cnt if tgt_task else None
         src_tf_days = src_tf / 8 if src_tf is not None else None
         tgt_tf_days = tgt_tf / 8 if tgt_tf is not None else None
-        pred_float_texts.append(f"{src_tf_days:.1f}d" if src_tf_days is not None else "N/A")
-        succ_float_texts.append(f"{tgt_tf_days:.1f}d" if tgt_tf_days is not None else "N/A")
+        pred_float_texts.append(f"{src_tf_days:.0f}d" if src_tf_days is not None else "N/A")
+        succ_float_texts.append(f"{tgt_tf_days:.0f}d" if tgt_tf_days is not None else "N/A")
         conn_src_floats.append(src_tf_days)
         conn_tgt_floats.append(tgt_tf_days)
         conn_k += 1
