@@ -49,10 +49,11 @@ def _build_hover_js(js_data: dict) -> str:
 
     On hover over a key node:
       - Successor arrows (outgoing) turn blue; predecessor arrows (incoming) turn purple.
-      - Unconnected edges fade to near-invisible.
-      - Connected nodes stay fully visible; unconnected nodes + their labels fade.
+      - Float labels appear on each arrow in the matching color.
+      - Unconnected edges fade; unconnected nodes/labels fade.
       - The hovered node's outline and labels turn red.
-    On unhover: everything is restored.
+    On unhover: hover state clears but float filter is re-applied.
+    Float slider: hides nodes/arrows whose float exceeds the chosen threshold.
     """
     succ_edge_map_json   = json.dumps(js_data["succ_edge_map"])
     pred_edge_map_json   = json.dumps(js_data["pred_edge_map"])
@@ -66,9 +67,13 @@ def _build_hover_js(js_data: dict) -> str:
     succ_label_trace_idx = js_data["succ_label_trace_idx"]
     node_neighbors_json  = json.dumps(js_data["node_neighbors"])
     node_codes_json      = json.dumps(js_data["node_codes"])
+    node_floats_json     = json.dumps(js_data["node_floats"])
+    conn_src_floats_json = json.dumps(js_data["conn_src_floats"])
+    conn_tgt_floats_json = json.dumps(js_data["conn_tgt_floats"])
     node_trace_idx       = js_data["node_trace_idx"]
-    below_trace_idx      = js_data["below_label_trace_idx"]   # -1 if absent
-    node_label_color     = _KEY_BORDER        # "#1e3a8a"
+    below_trace_idx      = js_data["below_label_trace_idx"]
+    slider_max           = js_data["slider_max"]
+    node_label_color     = _KEY_BORDER
     below_label_color    = "#64748b"
     default_edge_color   = _EDGE_COLOR
     succ_color           = _SUCC_EDGE_COLOR
@@ -81,19 +86,77 @@ def _build_hover_js(js_data: dict) -> str:
     var succConnMap      = {succ_conn_map_json};
     var predConnMap      = {pred_conn_map_json};
     var allEdgeIdx       = {all_edge_json};
-    var edgeLineSet      = new Set({edge_line_json});
-    var edgeArrowSet     = new Set({edge_arrow_json});
+    var edgeLineIndices  = {edge_line_json};
+    var edgeArrowIndices = {edge_arrow_json};
+    var edgeLineSet      = new Set(edgeLineIndices);
+    var edgeArrowSet     = new Set(edgeArrowIndices);
     var numConns         = {num_connections};
     var predLabelTraceIdx= {pred_label_trace_idx};
     var succLabelTraceIdx= {succ_label_trace_idx};
     var nodeNeighbors    = {node_neighbors_json};
     var nodeCodes        = {node_codes_json};
+    var nodeFloats       = {node_floats_json};
+    var connSrcFloats    = {conn_src_floats_json};
+    var connTgtFloats    = {conn_tgt_floats_json};
     var nodeTraceIdx     = {node_trace_idx};
     var belowTraceIdx    = {below_trace_idx};
+    var sliderMax        = {slider_max};
 
     var gd = document.querySelector('.js-plotly-plot');
     if (!gd || typeof gd.on !== 'function') return;
 
+    var currentFilter = Infinity;   // no filter by default
+
+    // ---------------------------------------------------------------- float filter
+    function nodeVisible(c) {{
+        var f = nodeFloats[c];
+        return f === null || f === undefined || f <= currentFilter;
+    }}
+
+    function applyFloatFilter(maxDays) {{
+        currentFilter = maxDays;
+
+        // Nodes
+        var nodeOp = nodeCodes.map(function(c) {{ return nodeVisible(c) ? 1.0 : 0.0; }});
+        var nodeLabelCol = nodeCodes.map(function(c) {{
+            return nodeVisible(c) ? '{node_label_color}' : 'rgba(0,0,0,0)';
+        }});
+        Plotly.restyle(gd,
+            {{'marker.opacity': [nodeOp], 'textfont.color': [nodeLabelCol],
+              'marker.line.color': [nodeLabelCol]}},
+            [nodeTraceIdx]);
+        if (belowTraceIdx >= 0) {{
+            var belowCol = nodeCodes.map(function(c) {{
+                return nodeVisible(c) ? '{below_label_color}' : 'rgba(0,0,0,0)';
+            }});
+            Plotly.restyle(gd, {{'textfont.color': [belowCol]}}, [belowTraceIdx]);
+        }}
+
+        // Edges — hide if either endpoint exceeds filter
+        var showLineIdx = [], showArrowIdx = [], hideLineIdx = [], hideArrowIdx = [];
+        for (var k = 0; k < numConns; k++) {{
+            var sf = connSrcFloats[k], tf = connTgtFloats[k];
+            var show = (sf === null || sf <= maxDays) && (tf === null || tf <= maxDays);
+            if (show) {{
+                showLineIdx.push(edgeLineIndices[k]);
+                showArrowIdx.push(edgeArrowIndices[k]);
+            }} else {{
+                hideLineIdx.push(edgeLineIndices[k]);
+                hideArrowIdx.push(edgeArrowIndices[k]);
+            }}
+        }}
+        if (showLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{default_edge_color}', opacity: 1.0}}, showLineIdx);
+        if (showArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{default_edge_color}', opacity: 1.0}}, showArrowIdx);
+        if (hideLineIdx.length)  Plotly.restyle(gd, {{opacity: 0.0}}, hideLineIdx);
+        if (hideArrowIdx.length) Plotly.restyle(gd, {{opacity: 0.0}}, hideArrowIdx);
+
+        // Hide float labels (hover will re-show relevant ones)
+        if (predLabelTraceIdx >= 0) {{
+            Plotly.restyle(gd, {{'textfont.color': 'rgba(0,0,0,0)'}}, [predLabelTraceIdx, succLabelTraceIdx]);
+        }}
+    }}
+
+    // ---------------------------------------------------------------- hover
     gd.on('plotly_hover', function(eventData) {{
         var pt   = eventData.points[0];
         var code = pt.customdata;
@@ -118,27 +181,32 @@ def _build_hover_js(js_data: dict) -> str:
         if (predLineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{pred_color}', opacity: 1.0}}, predLineIdx);
         if (predArrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{pred_color}', opacity: 1.0}}, predArrowIdx);
 
-        // --- nodes + above labels ---
+        // --- nodes + above labels (respect filter) ---
         var connNodes = new Set(nodeNeighbors[code] || []);
         connNodes.add(code);
 
         var markerOpacities = nodeCodes.map(function(c) {{
+            if (!nodeVisible(c)) return 0.0;
             return connNodes.has(c) ? 1.0 : 0.06;
         }});
         var labelColors = nodeCodes.map(function(c) {{
+            if (!nodeVisible(c)) return 'rgba(0,0,0,0)';
             if (c === code) return 'red';
             return connNodes.has(c) ? '{node_label_color}' : 'rgba(0,0,0,0.04)';
         }});
         var markerLineColors = nodeCodes.map(function(c) {{
+            if (!nodeVisible(c)) return 'rgba(0,0,0,0)';
             return c === code ? 'red' : '{node_label_color}';
         }});
         Plotly.restyle(gd,
-            {{'marker.opacity': [markerOpacities], 'textfont.color': [labelColors], 'marker.line.color': [markerLineColors]}},
+            {{'marker.opacity': [markerOpacities], 'textfont.color': [labelColors],
+              'marker.line.color': [markerLineColors]}},
             [nodeTraceIdx]);
 
-        // --- below labels (if present) ---
+        // --- below labels ---
         if (belowTraceIdx >= 0) {{
             var belowColors = nodeCodes.map(function(c) {{
+                if (!nodeVisible(c)) return 'rgba(0,0,0,0)';
                 if (c === code) return 'red';
                 return connNodes.has(c) ? '{below_label_color}' : 'rgba(0,0,0,0.04)';
             }});
@@ -158,25 +226,26 @@ def _build_hover_js(js_data: dict) -> str:
         }}
     }});
 
+    // ---------------------------------------------------------------- unhover
     gd.on('plotly_unhover', function() {{
-        // Restore edge colors and opacity
-        var lineIdx  = allEdgeIdx.filter(function(i) {{ return  edgeLineSet.has(i); }});
-        var arrowIdx = allEdgeIdx.filter(function(i) {{ return edgeArrowSet.has(i); }});
-        if (lineIdx.length)  Plotly.restyle(gd, {{'line.color':   '{default_edge_color}', opacity: 1.0}}, lineIdx);
-        if (arrowIdx.length) Plotly.restyle(gd, {{'marker.color': '{default_edge_color}', opacity: 1.0}}, arrowIdx);
-        // Restore nodes + above labels
-        Plotly.restyle(gd,
-            {{'marker.opacity': 1.0, 'textfont.color': '{node_label_color}', 'marker.line.color': '{node_label_color}'}},
-            [nodeTraceIdx]);
-        // Restore below labels
-        if (belowTraceIdx >= 0) {{
-            Plotly.restyle(gd, {{'textfont.color': '{below_label_color}'}}, [belowTraceIdx]);
-        }}
-        // Hide float labels
-        if (predLabelTraceIdx >= 0) {{
-            Plotly.restyle(gd, {{'textfont.color': 'rgba(0,0,0,0)'}}, [predLabelTraceIdx, succLabelTraceIdx]);
-        }}
+        applyFloatFilter(currentFilter);
     }});
+
+    // ---------------------------------------------------------------- float slider
+    var slider  = document.getElementById('float-slider');
+    var valLabel= document.getElementById('float-val');
+    if (slider) {{
+        slider.addEventListener('input', function() {{
+            var v = parseInt(this.value);
+            if (v >= sliderMax) {{
+                valLabel.textContent = 'All activities';
+                applyFloatFilter(Infinity);
+            }} else {{
+                valLabel.textContent = '\u2264 ' + v + 'd float';
+                applyFloatFilter(v);
+            }}
+        }});
+    }}
 }})();
 """
 
@@ -213,8 +282,11 @@ def build_figure(
     edge_arrow_indices: list[int] = []
     conn_mid_x: list[float] = []
     conn_mid_y: list[float] = []
-    pred_float_texts: list[str] = []   # source task float, one per connection
-    succ_float_texts: list[str] = []   # target task float, one per connection
+    pred_float_texts: list[str] = []        # source task float string, one per connection
+    succ_float_texts: list[str] = []        # target task float string, one per connection
+    conn_src_floats: list[float | None] = []  # source task float in days, one per connection
+    conn_tgt_floats: list[float | None] = []  # target task float in days, one per connection
+    node_floats: dict[str, float | None] = {}  # task_code -> float in days
     pred_label_trace_idx: int = -1
     succ_label_trace_idx: int = -1
     node_trace_idx: int = -1
@@ -310,8 +382,12 @@ def build_figure(
         tgt_task = tasks.get(conn.target_id)
         src_tf = src_task.total_float_hr_cnt if src_task else None
         tgt_tf = tgt_task.total_float_hr_cnt if tgt_task else None
-        pred_float_texts.append(f"{src_tf / 8:.1f}d" if src_tf is not None else "N/A")
-        succ_float_texts.append(f"{tgt_tf / 8:.1f}d" if tgt_tf is not None else "N/A")
+        src_tf_days = src_tf / 8 if src_tf is not None else None
+        tgt_tf_days = tgt_tf / 8 if tgt_tf is not None else None
+        pred_float_texts.append(f"{src_tf_days:.1f}d" if src_tf_days is not None else "N/A")
+        succ_float_texts.append(f"{tgt_tf_days:.1f}d" if tgt_tf_days is not None else "N/A")
+        conn_src_floats.append(src_tf_days)
+        conn_tgt_floats.append(tgt_tf_days)
         conn_k += 1
 
     # ------------------------------------------------------------------ intermediate nodes
@@ -416,10 +492,13 @@ def build_figure(
             # Show activity name below only when the flag is set
             below_labels.append(task.task_name if show_activity_name else "")
 
+        tf = task.total_float_hr_cnt
+        tf_days = tf / 8 if tf is not None else None
+        node_floats[task.task_code] = tf_days
+
         early_start = _parse_date(task.early_start_date)
         early_end   = _parse_date(task.early_end_date)
-        tf = task.total_float_hr_cnt
-        float_str = f"{tf / 8:.1f}d" if tf is not None else "N/A"
+        float_str = f"{tf_days:.1f}d" if tf_days is not None else "N/A"
         # Hover always shows full detail regardless of label mode
         hover_shorthand = f"Shorthand: {shorthand}<br>" if shorthand else ""
         khover.append(
@@ -506,6 +585,10 @@ def build_figure(
         height=800,
     )
 
+    known_floats = [v for v in node_floats.values() if v is not None]
+    slider_max = int(math.ceil(max(known_floats) / 5) * 5) if known_floats else 60
+    slider_max = max(slider_max, 10)
+
     js_data = {
         "succ_edge_map": succ_edge_map,
         "pred_edge_map": pred_edge_map,
@@ -520,7 +603,11 @@ def build_figure(
         "node_trace_idx": node_trace_idx,
         "node_codes": kcodes,
         "node_neighbors": node_neighbors,
+        "node_floats": node_floats,
+        "conn_src_floats": conn_src_floats,
+        "conn_tgt_floats": conn_tgt_floats,
         "below_label_trace_idx": below_label_trace_idx,
+        "slider_max": slider_max,
     }
     return fig, js_data
 
@@ -530,6 +617,17 @@ def write_html(fig: go.Figure, output_path: str, js_data: dict) -> None:
 
     with open(output_path, "r", encoding="utf-8") as fh:
         html = fh.read()
+
+    slider_max = js_data["slider_max"]
+    slider_html = f"""
+<div id="float-filter-bar" style="font-family:sans-serif;padding:10px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:16px;">
+  <span style="font-size:13px;color:#475569;white-space:nowrap;font-weight:600;">Float filter</span>
+  <input type="range" id="float-slider" min="0" max="{slider_max}" step="1" value="{slider_max}"
+         style="width:320px;accent-color:#2563eb;cursor:pointer;">
+  <span id="float-val" style="font-size:13px;font-weight:700;color:#1e3a8a;min-width:80px;">All activities</span>
+</div>
+"""
+    html = html.replace("<body>", "<body>" + slider_html, 1)
 
     js = _build_hover_js(js_data)
     script_block = f"\n<script type=\"text/javascript\">{js}</script>\n"
