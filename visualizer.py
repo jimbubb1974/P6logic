@@ -56,9 +56,14 @@ def _build_hover_js(js_data: dict) -> str:
     """
     succ_edge_map_json   = json.dumps(js_data["succ_edge_map"])
     pred_edge_map_json   = json.dumps(js_data["pred_edge_map"])
+    succ_conn_map_json   = json.dumps(js_data["succ_conn_map"])
+    pred_conn_map_json   = json.dumps(js_data["pred_conn_map"])
     all_edge_json        = json.dumps(js_data["all_edge_indices"])
     edge_line_json       = json.dumps(js_data["edge_line_indices"])
     edge_arrow_json      = json.dumps(js_data["edge_arrow_indices"])
+    num_connections      = js_data["num_connections"]
+    pred_label_trace_idx = js_data["pred_label_trace_idx"]
+    succ_label_trace_idx = js_data["succ_label_trace_idx"]
     node_neighbors_json  = json.dumps(js_data["node_neighbors"])
     node_codes_json      = json.dumps(js_data["node_codes"])
     node_trace_idx       = js_data["node_trace_idx"]
@@ -71,15 +76,20 @@ def _build_hover_js(js_data: dict) -> str:
 
     return f"""
 (function() {{
-    var succEdgeMap   = {succ_edge_map_json};
-    var predEdgeMap   = {pred_edge_map_json};
-    var allEdgeIdx    = {all_edge_json};
-    var edgeLineSet   = new Set({edge_line_json});
-    var edgeArrowSet  = new Set({edge_arrow_json});
-    var nodeNeighbors = {node_neighbors_json};
-    var nodeCodes     = {node_codes_json};
-    var nodeTraceIdx  = {node_trace_idx};
-    var belowTraceIdx = {below_trace_idx};
+    var succEdgeMap      = {succ_edge_map_json};
+    var predEdgeMap      = {pred_edge_map_json};
+    var succConnMap      = {succ_conn_map_json};
+    var predConnMap      = {pred_conn_map_json};
+    var allEdgeIdx       = {all_edge_json};
+    var edgeLineSet      = new Set({edge_line_json});
+    var edgeArrowSet     = new Set({edge_arrow_json});
+    var numConns         = {num_connections};
+    var predLabelTraceIdx= {pred_label_trace_idx};
+    var succLabelTraceIdx= {succ_label_trace_idx};
+    var nodeNeighbors    = {node_neighbors_json};
+    var nodeCodes        = {node_codes_json};
+    var nodeTraceIdx     = {node_trace_idx};
+    var belowTraceIdx    = {below_trace_idx};
 
     var gd = document.querySelector('.js-plotly-plot');
     if (!gd || typeof gd.on !== 'function') return;
@@ -134,6 +144,18 @@ def _build_hover_js(js_data: dict) -> str:
             }});
             Plotly.restyle(gd, {{'textfont.color': [belowColors]}}, [belowTraceIdx]);
         }}
+
+        // --- float labels on arrows ---
+        if (predLabelTraceIdx >= 0) {{
+            var invis = 'rgba(0,0,0,0)';
+            var predLabelColors = Array(numConns).fill(invis);
+            (predConnMap[code] || []).forEach(function(k) {{ predLabelColors[k] = '{pred_color}'; }});
+            Plotly.restyle(gd, {{'textfont.color': [predLabelColors]}}, [predLabelTraceIdx]);
+
+            var succLabelColors = Array(numConns).fill(invis);
+            (succConnMap[code] || []).forEach(function(k) {{ succLabelColors[k] = '{succ_color}'; }});
+            Plotly.restyle(gd, {{'textfont.color': [succLabelColors]}}, [succLabelTraceIdx]);
+        }}
     }});
 
     gd.on('plotly_unhover', function() {{
@@ -149,6 +171,10 @@ def _build_hover_js(js_data: dict) -> str:
         // Restore below labels
         if (belowTraceIdx >= 0) {{
             Plotly.restyle(gd, {{'textfont.color': '{below_label_color}'}}, [belowTraceIdx]);
+        }}
+        // Hide float labels
+        if (predLabelTraceIdx >= 0) {{
+            Plotly.restyle(gd, {{'textfont.color': 'rgba(0,0,0,0)'}}, [predLabelTraceIdx, succLabelTraceIdx]);
         }}
     }});
 }})();
@@ -180,11 +206,20 @@ def build_figure(
     # JS data
     succ_edge_map: dict[str, list[int]] = {}   # source_code -> trace indices (outgoing)
     pred_edge_map: dict[str, list[int]] = {}   # target_code -> trace indices (incoming)
+    succ_conn_map: dict[str, list[int]] = {}   # source_code -> connection indices
+    pred_conn_map: dict[str, list[int]] = {}   # target_code -> connection indices
     all_edge_indices: list[int] = []
     edge_line_indices: list[int] = []
     edge_arrow_indices: list[int] = []
+    conn_mid_x: list[float] = []
+    conn_mid_y: list[float] = []
+    pred_float_texts: list[str] = []   # source task float, one per connection
+    succ_float_texts: list[str] = []   # target task float, one per connection
+    pred_label_trace_idx: int = -1
+    succ_label_trace_idx: int = -1
     node_trace_idx: int = -1
     below_label_trace_idx: int = -1
+    conn_k: int = 0   # connection counter
 
     # node_neighbors: task_code -> [directly connected task_codes] (for node fading)
     node_neighbors: dict[str, list[str]] = {}
@@ -266,6 +301,19 @@ def build_figure(
         edge_arrow_indices.append(trace_idx)
         trace_idx += 1
 
+        # Per-connection data for float labels
+        succ_conn_map.setdefault(conn.source_code, []).append(conn_k)
+        pred_conn_map.setdefault(conn.target_code, []).append(conn_k)
+        conn_mid_x.append((x0 + x1) / 2)
+        conn_mid_y.append((y0 + y1) / 2)
+        src_task = tasks.get(conn.source_id)
+        tgt_task = tasks.get(conn.target_id)
+        src_tf = src_task.total_float_hr_cnt if src_task else None
+        tgt_tf = tgt_task.total_float_hr_cnt if tgt_task else None
+        pred_float_texts.append(f"{src_tf / 8:.1f}d" if src_tf is not None else "N/A")
+        succ_float_texts.append(f"{tgt_tf / 8:.1f}d" if tgt_tf is not None else "N/A")
+        conn_k += 1
+
     # ------------------------------------------------------------------ intermediate nodes
     if show_intermediate:
         inter_ids = list(dict.fromkeys(
@@ -310,6 +358,33 @@ def build_figure(
                 showlegend=True,
             ))
             trace_idx += 1
+
+    # ------------------------------------------------------------------ float labels on edges (invisible until hover)
+    _INVIS = "rgba(0,0,0,0)"
+    if conn_mid_x:
+        pred_label_trace_idx = trace_idx
+        fig.add_trace(go.Scatter(
+            x=conn_mid_x, y=conn_mid_y,
+            mode="text",
+            text=pred_float_texts,
+            textposition="middle center",
+            textfont=dict(size=8, color=[_INVIS] * len(conn_mid_x)),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        trace_idx += 1
+
+        succ_label_trace_idx = trace_idx
+        fig.add_trace(go.Scatter(
+            x=conn_mid_x, y=conn_mid_y,
+            mode="text",
+            text=succ_float_texts,
+            textposition="middle center",
+            textfont=dict(size=8, color=[_INVIS] * len(conn_mid_x)),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        trace_idx += 1
 
     # ------------------------------------------------------------------ key nodes (last → on top)
     kx, ky, kcodes, knames, khover = [], [], [], [], []
@@ -434,9 +509,14 @@ def build_figure(
     js_data = {
         "succ_edge_map": succ_edge_map,
         "pred_edge_map": pred_edge_map,
+        "succ_conn_map": succ_conn_map,
+        "pred_conn_map": pred_conn_map,
         "all_edge_indices": all_edge_indices,
         "edge_line_indices": edge_line_indices,
         "edge_arrow_indices": edge_arrow_indices,
+        "num_connections": conn_k,
+        "pred_label_trace_idx": pred_label_trace_idx,
+        "succ_label_trace_idx": succ_label_trace_idx,
         "node_trace_idx": node_trace_idx,
         "node_codes": kcodes,
         "node_neighbors": node_neighbors,
