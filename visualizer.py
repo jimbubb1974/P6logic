@@ -120,7 +120,7 @@ def _build_hover_js(js_data: dict) -> str:
     // ---------------------------------------------------------------- cached filter state
     // Rebuilt once per filter change; reused on every hover.
     var cachedFilteredConnSet = new Set();   // connection indices whose edge should be hidden
-    var cachedNodeVisibility  = {};          // code -> bool
+    var cachedNodeVisibility  = {{}};          // code -> bool
 
     function rebuildFilterCache() {{
         cachedFilteredConnSet = new Set();
